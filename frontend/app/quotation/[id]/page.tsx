@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Navbar } from "@/components/Navbar";
-import { getQuotation, updateQuotation, setQuotationStatus, rematchQuotation, getOpportunities, searchProducts, searchExternalProduct } from "@/lib/api";
+import { getQuotation, updateQuotation, setQuotationStatus, rematchQuotation, getOpportunities, searchProducts, searchExternalProduct, getQuotationComments } from "@/lib/api";
 import { LoadingSpinner } from "@/components/LoadingSpinner";
 import { ProductImage } from "@/components/ProductImage";
 import { ValueEngineeringPanel } from "@/components/ValueEngineeringPanel";
@@ -79,6 +79,7 @@ export default function QuotationEditor() {
     const [items, setItems] = useState<QuotationItem[]>([]);
     const [clientName, setClientName] = useState("");
     const [clientOptions, setClientOptions] = useState<string[]>([]);
+    const [commentCount, setCommentCount] = useState(0);
     
     // Advanced feature state
     const [globalMargin, setGlobalMargin] = useState<number>(30); 
@@ -96,37 +97,64 @@ export default function QuotationEditor() {
     const [isWebSearching, setIsWebSearching] = useState(false);
     const [webSearchQuery, setWebSearchQuery] = useState("");
 
-    useEffect(() => { if (id) loadData(); }, [id]);
+    useEffect(() => { 
+        if (id) {
+            loadData(false);
+            // Polling for real-time updates (comments & status)
+            const interval = setInterval(() => loadData(true), 5000);
+            return () => clearInterval(interval);
+        }
+    }, [id]);
 
-    async function loadData() {
+    async function loadData(isRefresh = false) {
         try {
-            const [q, ops] = await Promise.all([getQuotation(Number(id)), getOpportunities().catch(() => [])]);
-            setData(q);
-            setClientName(q.content?.client_name || q.client_name || "");
-            setClientOptions(Array.from(new Set(ops.map((o: any) => o.client_name))).filter(Boolean) as string[]);
-            setRequirements(q.content?.requirements || []);
+            const [q, ops, comments] = await Promise.all([
+                getQuotation(Number(id)), 
+                !isRefresh ? getOpportunities().catch(() => []) : Promise.resolve([]),
+                getQuotationComments(Number(id)).catch(() => [])
+            ]);
             
-            const mappedItems = (q.content?.matches || []).map((m: any) => {
-                const unitPrice = m.unit_price || (m.price / (m.quantity || 1)) || m.price || 0;
-                // Basic wattage extraction from description for ROI
-                const wattageMatch = (m.product_description || "").match(/(\d+)\s*W/i);
-                const estimatedWattage = wattageMatch ? parseInt(wattageMatch[1]) : 20;
+            if (Array.isArray(comments)) {
+                setCommentCount(comments.length);
+            }
 
-                return {
-                    ...m,
-                    quantity: m.quantity || 1,
-                    unit_price: unitPrice,
-                    unit_cost: m.unit_cost || (unitPrice * 0.6),
-                    price: m.price || (unitPrice * (m.quantity || 1)),
-                    image_url: m.image_url || "",
-                    alternatives: m.alternatives || [],
-                    wattage: estimatedWattage
-                };
-            });
-            setItems(mappedItems);
-            if (q.status === 'sent' || q.status === 'finalized') setActiveTab("finalize");
+            if (!isRefresh) {
+                // Initial Load: Full state population
+                setData(q);
+                setClientName(q.content?.client_name || q.client_name || "");
+                setClientOptions(Array.from(new Set(ops.map((o: any) => o.client_name))).filter(Boolean) as string[]);
+                setRequirements(q.content?.requirements || []);
+                
+                const mappedItems = (q.content?.matches || []).map((m: any) => {
+                    const unitPrice = m.unit_price || (m.price / (m.quantity || 1)) || m.price || 0;
+                    // Basic wattage extraction from description for ROI
+                    const wattageMatch = (m.product_description || "").match(/(\d+)\s*W/i);
+                    const estimatedWattage = wattageMatch ? parseInt(wattageMatch[1]) : 20;
+
+                    return {
+                        ...m,
+                        quantity: m.quantity || 1,
+                        unit_price: unitPrice,
+                        unit_cost: m.unit_cost || (unitPrice * 0.6),
+                        price: m.price || (unitPrice * (m.quantity || 1)),
+                        image_url: m.image_url || "",
+                        alternatives: m.alternatives || [],
+                        wattage: estimatedWattage
+                    };
+                });
+                setItems(mappedItems);
+                if (q.status === 'sent' || q.status === 'finalized') setActiveTab("finalize");
+            } else {
+                // Real-time update: Only status and metadata to avoid overwriting edits
+                setData((prev: any) => ({
+                    ...prev,
+                    status: q.status,
+                    rfp_title: q.rfp_title,
+                    updated_at: q.updated_at
+                }));
+            }
         } catch (err) { console.error(err); } 
-        finally { setLoading(false); }
+        finally { if (!isRefresh) setLoading(false); }
     }
 
     const handleSpecChange = (idx: number, field: string, value: string) => { 
@@ -245,12 +273,12 @@ export default function QuotationEditor() {
     const handleSendEmail = async () => {
         if (!recipientEmail) { alert("Enter email."); return; }
         setSaving(true);
-        try { await sendQuotationEmail(Number(id), recipientEmail); alert("Sent!"); loadData(); } catch (e) { alert("Failed to send."); } finally { setSaving(false); }
+        try { await sendQuotationEmail(Number(id), recipientEmail); alert("Sent!"); loadData(false); } catch (e) { alert("Failed to send."); } finally { setSaving(false); }
     };
 
     const handleFinalize = async () => {
         setSaving(true);
-        try { await setQuotationStatus(Number(id), "finalized"); alert("Quotation finalized!"); loadData(); } catch (e) { alert("Failed to finalize."); } finally { setSaving(false); }
+        try { await setQuotationStatus(Number(id), "finalized"); alert("Quotation finalized!"); loadData(false); } catch (e) { alert("Failed to finalize."); } finally { setSaving(false); }
     };
 
     const handleDownload = async () => {
@@ -386,6 +414,17 @@ export default function QuotationEditor() {
                             </div>
                         </div>
                         <div className="flex gap-3">
+                            <button 
+                                onClick={() => router.push(`/quotation/${id}/discuss`)}
+                                className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-50 hover:text-brand flex items-center gap-2 transition-all relative"
+                            >
+                                <span>💬</span> Discuss
+                                {commentCount > 0 && (
+                                    <span className="absolute -top-2 -right-2 bg-red-500 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full shadow-sm animate-bounce">
+                                        {commentCount}
+                                    </span>
+                                )}
+                            </button>
                             {saving && <span className="text-sm text-brand animate-pulse flex items-center font-bold">Saving...</span>}
                             {activeTab === 'finalize' && (<button onClick={handleDownload} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-700 flex items-center gap-2 shadow-lg"><span>⬇</span> PDF</button>)}
                         </div>

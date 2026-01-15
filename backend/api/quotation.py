@@ -3,13 +3,16 @@ from typing import List, Any, Dict, Optional
 import logging
 import json
 import base64
+import shutil
+import os
+import uuid
 from decimal import Decimal
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from fpdf import FPDF
 
 from services.pdf_processor import extract_text_from_pdf
 from agents.rfp_agent import run_quotation_flow
-from models.quotation_db import QuotationDB, QuotationUpdate, AuditLogEntry
+from models.quotation_db import QuotationDB, QuotationUpdate, AuditLogEntry, CommentDB, CommentCreate
 from core.database import fetchval, fetch, execute, fetchrow
 from services.vector_search import search_similar_products
 from services.embeddings import embed_text
@@ -78,15 +81,8 @@ def generate_quotation_pdf(data: Dict[str, Any], quote_id: int) -> bytes:
     pdf.cell(0, 10, f"Total Amount: ${float(total):,.2f}", ln=True, align='R')
     return bytes(pdf.output())
 
-# ... (Previous upload/list/get/update/rematch endpoints remain same) ...
-# I am re-including them to ensure file integrity, but condensed for brevity in thought process.
-# Since I must output the *whole* file if editing, I will include everything below.
-
 @router.post("/upload", response_model=QuotationDB)
 async def upload_and_process_rfp(file: UploadFile = File(...), x_user_id: Optional[int] = Header(None), x_user_email: Optional[str] = Header(None)) -> Any:
-    # ... (Standard upload logic) ...
-    # Simplified for this output to focus on the new/fixed parts, assuming standard logic exists in your file.
-    # To be safe, I'll paste the full previous implementation + fixes.
     logger.info(f"Processing RFP: {file.filename}")
     if not file.filename.lower().endswith('.pdf'): raise HTTPException(status_code=400, detail="Only PDF files are supported")
     try:
@@ -158,7 +154,6 @@ async def rematch_quotation(id: int, requirements: List[Dict[str, Any]] = Body(.
             if candidates:
                 best = candidates[0]
                 alts = candidates[1:3]
-                alt_text = " | ".join([f"{a['title']} (${a.get('price', 'N/A')})" for a in alts])
                 score = best.get("score", 0.0)
                 try: qty_val = float(req.get("Qty", 1))
                 except: qty_val = 1.0
@@ -198,7 +193,90 @@ async def get_audit_log(id: int):
     rows = await fetch("SELECT * FROM quotation_audit_log WHERE quotation_id = $1 ORDER BY timestamp DESC", id)
     return [dict(row) for row in rows]
 
-# --- NEW: Download PDF Endpoint ---
+# --- Discussion Endpoints ---
+
+@router.get("/{id}/comments", response_model=List[CommentDB])
+async def get_comments(id: int):
+    # Using explicit columns to prevent Asyncpg InvalidCachedStatementError due to schema change
+    rows = await fetch(
+        """
+        SELECT id, quotation_id, user_id, user_name, user_email, message, is_internal, attachments, created_at
+        FROM quotation_comments 
+        WHERE quotation_id = $1 
+        ORDER BY created_at ASC
+        """, 
+        id
+    )
+    # Ensure attachments is parsed if string
+    results = []
+    for row in rows:
+        d = dict(row)
+        if 'attachments' in d:
+            if isinstance(d.get('attachments'), str):
+                try: d['attachments'] = json.loads(d['attachments'])
+                except: d['attachments'] = []
+            elif d.get('attachments') is None:
+                d['attachments'] = []
+        else:
+            d['attachments'] = []
+        results.append(d)
+    return results
+
+@router.post("/{id}/comments/upload")
+async def upload_comment_attachment(id: int, file: UploadFile = File(...)):
+    try:
+        # Create unique filename
+        file_ext = file.filename.split('.')[-1]
+        unique_name = f"{id}_{uuid.uuid4()}.{file_ext}"
+        file_path = f"uploads/{unique_name}"
+        
+        # Save locally
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # Return the public URL
+        # In production, this would be a full domain URL or S3 link
+        url = f"http://localhost:8000/uploads/{unique_name}"
+        
+        return {
+            "name": file.filename,
+            "url": url,
+            "type": file.content_type or "application/octet-stream"
+        }
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="File upload failed")
+
+@router.post("/{id}/comments")
+async def add_comment(
+    id: int, 
+    payload: CommentCreate, 
+    x_user_id: Optional[int] = Header(None),
+    x_user_email: Optional[str] = Header(None)
+):
+    user_name = "Guest"
+    if x_user_id:
+        u_row = await fetchrow("SELECT name FROM users WHERE id = $1", x_user_id)
+        if u_row:
+            user_name = u_row['name']
+    elif x_user_email:
+        user_name = x_user_email.split('@')[0]
+
+    # Convert attachments list to JSON string for storage
+    attachments_json = json.dumps([a.model_dump() for a in payload.attachments])
+
+    await execute(
+        """
+        INSERT INTO quotation_comments (quotation_id, user_id, user_name, user_email, message, is_internal, attachments)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+        id, x_user_id, user_name, x_user_email, payload.message, payload.is_internal, attachments_json
+    )
+    
+    await log_user_activity(x_user_id, x_user_email, "Posted Comment", "Quotation", id, details={"has_attachments": len(payload.attachments) > 0})
+    
+    return {"status": "success"}
+
 @router.get("/{id}/download")
 async def download_quotation(id: int, x_user_id: Optional[int] = Header(None), x_user_email: Optional[str] = Header(None)):
     row = await fetchrow("SELECT * FROM quotations WHERE id = $1", id)
@@ -211,7 +289,6 @@ async def download_quotation(id: int, x_user_id: Optional[int] = Header(None), x
     
     return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=Quotation_{id}.pdf"})
 
-# --- FIXED: Send Email Endpoint ---
 @router.post("/{id}/send")
 async def send_quotation_email(
     id: int, 
@@ -226,13 +303,6 @@ async def send_quotation_email(
     pdf_bytes = generate_quotation_pdf(q, id)
     link = f"http://localhost:3000/quotation/{id}"
     
-    # Correct format for in-memory attachment in fastapi-mail
-    # Note: 'file' is the filename, 'data' (not content) is usually used for bytes in some versions, 
-    # but base64 encoding it and passing as 'base64' is safer if passing dict. 
-    # OR better: use FastMail's internal handling for bytes.
-    # MessageSchema expects attachments to be list of UploadFile OR dicts.
-    
-    # Simple dict format for bytes (supported by recent fastapi-mail)
     attachment = {
         "file": f"Quotation_{id}.pdf",
         "headers": {"Content-Type": "application/pdf"},

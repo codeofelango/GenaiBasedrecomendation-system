@@ -140,3 +140,27 @@ CREATE TABLE IF NOT EXISTS db_chat_history (
 
 CREATE INDEX IF NOT EXISTS idx_chat_session ON db_chat_history(session_id);
 CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON db_chat_history(timestamp);
+
+
+-- Table for Quotation Discussions / Comments
+CREATE TABLE IF NOT EXISTS quotation_comments (
+    id SERIAL PRIMARY KEY,
+    quotation_id INTEGER REFERENCES quotations(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id),
+    user_name TEXT, -- Snapshot in case user is deleted
+    user_email TEXT,
+    message TEXT NOT NULL,
+    is_internal BOOLEAN DEFAULT FALSE, -- To distinguish team-only notes vs client-visible
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for faster searching by status or client
+CREATE INDEX IF NOT EXISTS idx_quotations_status ON quotations(status);
+CREATE INDEX IF NOT EXISTS idx_quotation_comments_q_id ON quotation_comments(quotation_id);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'quotation_comments' AND column_name = 'attachments') THEN
+        ALTER TABLE quotation_comments ADD COLUMN attachments JSONB DEFAULT '[]';
+    END IF;
+END $$;

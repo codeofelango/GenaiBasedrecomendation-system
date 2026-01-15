@@ -75,7 +75,7 @@ export async function uploadCommentAttachment(id: number, file: File) {
     const formData = new FormData();
     formData.append("file", file);
     
-    // Correctly using fetch to let browser set boundary
+    // Use fetch directly to allow browser to set Content-Type with boundary for FormData
     const res = await fetch(`${BASE_URL}/quotation/${id}/comments/upload`, {
         method: "POST",
         body: formData,

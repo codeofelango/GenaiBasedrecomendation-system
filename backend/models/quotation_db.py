@@ -32,3 +32,24 @@ class AuditLogEntry(BaseModel):
     changed_by: str
     timestamp: datetime
     change_details: Optional[str]
+
+class Attachment(BaseModel):
+    name: str
+    url: str
+    type: str
+
+class CommentCreate(BaseModel):
+    message: str
+    is_internal: bool = False
+    attachments: List[Attachment] = []
+
+class CommentDB(BaseModel):
+    id: int
+    quotation_id: int
+    user_id: Optional[int]
+    user_name: Optional[str]
+    user_email: Optional[str]
+    message: str
+    is_internal: bool
+    attachments: Optional[List[Dict[str, Any]]] = [] # Added attachments
+    created_at: datetime

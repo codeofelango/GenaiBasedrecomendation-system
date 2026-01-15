@@ -3,7 +3,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-
+from fastapi.staticfiles import StaticFiles # Import this
+import os
 # Absolute imports
 from core.config import get_settings
 from core.database import init_pool, close_pool, fetchval
@@ -20,6 +21,11 @@ from api.email_bot import router as email_bot_router
 import api.visual_search as visual_search   # Visual Search Module
 import api.external_search as external_search   # External Search Module
 from api.db_chat import router as db_chat_router  # <--- Add this
+
+# Ensure uploads directory exists
+os.makedirs("uploads", exist_ok=True)
+
+# Mount the uploads directory to be accessible via /uploads
 
 # New Import
 from api.rag import router as rag_router 
@@ -49,6 +55,8 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Project Phoenix Backend", version="2.0", lifespan=lifespan)
+    app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
     
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
