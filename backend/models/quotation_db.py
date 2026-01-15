@@ -20,12 +20,22 @@ class QuotationDB(BaseModel):
     status: str
     total_price: float
     content: Dict[str, Any]
+    version: int = 1  # Added version field
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
 
+class QuotationVersionDB(BaseModel):
+    id: int
+    quotation_id: int
+    version: int
+    total_price: float
+    created_at: datetime
+    change_reason: Optional[str] = None
+    # We might not send full 'content' in a list view to save bandwidth
+    
 class AuditLogEntry(BaseModel):
     id: int
     action: str

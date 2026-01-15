@@ -12,12 +12,21 @@ from fpdf import FPDF
 
 from services.pdf_processor import extract_text_from_pdf
 from agents.rfp_agent import run_quotation_flow
-from models.quotation_db import QuotationDB, QuotationUpdate, AuditLogEntry, CommentDB, CommentCreate
+from models.quotation_db import QuotationDB, QuotationUpdate, AuditLogEntry, CommentDB, CommentCreate, QuotationVersionDB
 from core.database import fetchval, fetch, execute, fetchrow
 from services.vector_search import search_similar_products
 from services.embeddings import embed_text
 from core.activity_logger import log_user_activity
 from core.config import get_settings
+
+# The missing import was APIRouter, but it is already imported on line 1.
+# Wait, checking the traceback provided by user:
+# File "C:\...\backend\api\quotation.py", line 24, in <module>
+# router = APIRouter(prefix="/quotation", tags=["quotation"])
+# NameError: name 'APIRouter' is not defined
+
+# It seems in my previous edit (Fix Backend Query), I might have accidentally removed it or the file context was lost.
+# I will regenerate the full file content ensuring all imports are correct.
 
 router = APIRouter(prefix="/quotation", tags=["quotation"])
 logger = logging.getLogger("uvicorn")
@@ -192,6 +201,99 @@ async def set_status(id: int, status: str = Body(..., embed=True), x_user_id: Op
 async def get_audit_log(id: int):
     rows = await fetch("SELECT * FROM quotation_audit_log WHERE quotation_id = $1 ORDER BY timestamp DESC", id)
     return [dict(row) for row in rows]
+
+# --- Version Control Endpoints ---
+
+@router.post("/{id}/version")
+async def create_new_version(
+    id: int, 
+    change_reason: str = Body(..., embed=True),
+    x_user_id: Optional[int] = Header(None), 
+    x_user_email: Optional[str] = Header(None)
+):
+    """
+    Save current state as a historical version and increment the main version number.
+    Typically called before making major edits or sending to client.
+    """
+    # 1. Get current state
+    row = await fetchrow("SELECT * FROM quotations WHERE id = $1", id)
+    if not row: raise HTTPException(status_code=404, detail="Quotation not found")
+    
+    current_version = row.get('version', 1)
+    
+    # 2. Archive current state to versions table
+    await execute(
+        """
+        INSERT INTO quotation_versions 
+        (quotation_id, version, rfp_title, client_name, total_price, content, created_by, change_reason)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """,
+        id, 
+        current_version, 
+        row['rfp_title'], 
+        row['client_name'], 
+        row['total_price'], 
+        row['content'], # JSONB is stored directly
+        x_user_email or "system",
+        change_reason
+    )
+    
+    # 3. Increment version in main table
+    new_version = current_version + 1
+    await execute("UPDATE quotations SET version = $1, updated_at = NOW() WHERE id = $2", new_version, id)
+    
+    await log_user_activity(x_user_id, x_user_email, "Created New Version", "Quotation", id, details={"old_version": current_version, "new_version": new_version})
+    
+    return {"status": "success", "new_version": new_version}
+
+@router.get("/{id}/versions", response_model=List[QuotationVersionDB])
+async def get_quotation_versions(id: int):
+    """List all past versions of this quotation."""
+    rows = await fetch(
+        """
+        SELECT id, quotation_id, version, total_price, created_at, change_reason 
+        FROM quotation_versions 
+        WHERE quotation_id = $1 
+        ORDER BY version DESC
+        """, 
+        id
+    )
+    return [dict(row) for row in rows]
+
+@router.get("/{id}/versions/{version}")
+async def get_specific_version(id: int, version: int):
+    """Retrieve the full content of a specific past version."""
+    # Check if it's the current version
+    current = await fetchrow("SELECT version FROM quotations WHERE id = $1", id)
+    if current and current['version'] == version:
+        return await get_quotation(id) # Reuse existing function for current state
+
+    # Otherwise fetch from history
+    row = await fetchrow(
+        "SELECT * FROM quotation_versions WHERE quotation_id = $1 AND version = $2", 
+        id, version
+    )
+    if not row: raise HTTPException(status_code=404, detail="Version not found")
+    
+    # Map to QuotationDB shape for frontend compatibility
+    data = dict(row)
+    # Ensure content is parsed
+    if isinstance(data.get("content"), str):
+        try: data["content"] = json.loads(data["content"])
+        except: data["content"] = {}
+        
+    # Map fields to match main QuotationDB schema
+    return {
+        "id": id, # Keep original ID
+        "rfp_title": data['rfp_title'],
+        "client_name": data['client_name'],
+        "status": "archived", # Mark as archived/historical
+        "total_price": data['total_price'],
+        "content": data['content'],
+        "version": data['version'],
+        "created_at": data['created_at'],
+        "updated_at": data['created_at']
+    }
 
 # --- Discussion Endpoints ---
 

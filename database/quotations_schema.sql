@@ -164,3 +164,49 @@ BEGIN
         ALTER TABLE quotation_comments ADD COLUMN attachments JSONB DEFAULT '[]';
     END IF;
 END $$;
+
+
+-- Table to store the main quotation data
+-- 1. Add version column to main quotations table if not exists
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'quotations' AND column_name = 'version') THEN
+        ALTER TABLE quotations ADD COLUMN version INTEGER DEFAULT 1;
+    END IF;
+END $$;
+
+-- 2. Create Quotation Versions Table (History)
+CREATE TABLE IF NOT EXISTS quotation_versions (
+    id SERIAL PRIMARY KEY,
+    quotation_id INTEGER REFERENCES quotations(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    rfp_title TEXT,
+    client_name TEXT,
+    total_price NUMERIC(10, 2),
+    content JSONB, -- Full snapshot of the quotation content at this version
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_by TEXT, -- User who created this version
+    change_reason TEXT -- Optional: Why this version was created (e.g., "Client requested discount")
+);
+
+
+
+-- Index for fast lookup
+CREATE INDEX IF NOT EXISTS idx_quotation_versions_qid ON quotation_versions(quotation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quotation_versions_unique ON quotation_versions(quotation_id, version);
+
+    id SERIAL PRIMARY KEY,
+    rfp_title TEXT NOT NULL,
+    client_name TEXT DEFAULT 'Valued Client',
+    status TEXT DEFAULT 'draft', -- draft, saved, created, printed, sent, re_changes
+    total_price NUMERIC(10, 2) DEFAULT 0,
+    currency TEXT DEFAULT 'USD',
+    
+    -- We store the complex structure (requirements, matches, line items) as JSONB
+    -- This allows flexibility when the AI structure changes
+    content JSONB, 
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_by TEXT DEFAULT 'system'
+);

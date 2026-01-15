@@ -1,5 +1,6 @@
 const BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
+// Helper function to get headers with auth token
 function getAuthHeaders(options: RequestInit = {}): HeadersInit {
     const headers: any = { ...options.headers };
     if (typeof window !== "undefined") {
@@ -50,8 +51,17 @@ export async function searchProducts(query: string) { return getJSON(`/items/sea
 export async function uploadRFP(file: File) {
 	const formData = new FormData();
 	formData.append("file", file);
+    // Explicitly call getAuthHeaders here as we are using raw fetch, not getJSON
     const headers = getAuthHeaders() as any;
-    const res = await fetch(`${BASE_URL}/quotation/upload`, { method: "POST", body: formData, headers: { "x-user-id": headers["x-user-id"] || "", "x-user-email": headers["x-user-email"] || "" } });
+    const res = await fetch(`${BASE_URL}/quotation/upload`, { 
+        method: "POST", 
+        body: formData, 
+        headers: { 
+            "x-user-id": headers["x-user-id"] || "", 
+            "x-user-email": headers["x-user-email"] || "",
+            "Authorization": headers["Authorization"] || ""
+        } 
+    });
     if (!res.ok) throw new Error("Upload failed");
     return res.json();
 }
@@ -75,12 +85,17 @@ export async function uploadCommentAttachment(id: number, file: File) {
     const formData = new FormData();
     formData.append("file", file);
     
-    // Correctly using fetch to let browser set boundary
+    // Explicitly call getAuthHeaders here as we are using raw fetch, not getJSON
+    // Note: We do NOT set Content-Type header here manually. fetch+FormData does it automatically with boundary.
+    const headers = getAuthHeaders() as any;
+    
     const res = await fetch(`${BASE_URL}/quotation/${id}/comments/upload`, {
         method: "POST",
         body: formData,
         headers: {
-            ...getAuthHeaders() as any
+            "x-user-id": headers["x-user-id"] || "",
+            "x-user-email": headers["x-user-email"] || "",
+            "Authorization": headers["Authorization"] || ""
         }
     });
     
@@ -94,6 +109,23 @@ export async function addQuotationComment(id: number, message: string, isInterna
         headers: { "Content-Type": "application/json" }, 
         body: JSON.stringify({ message, is_internal: isInternal, attachments }) 
     }); 
+}
+
+// --- Version Control API ---
+export async function createQuotationVersion(id: number, changeReason: string) {
+    return getJSON(`/quotation/${id}/version`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ change_reason: changeReason })
+    });
+}
+
+export async function getQuotationHistory(id: number) {
+    return getJSON(`/quotation/${id}/versions`);
+}
+
+export async function getQuotationVersion(id: number, version: number) {
+    return getJSON(`/quotation/${id}/versions/${version}`);
 }
 
 // --- External Search (Tavily) ---

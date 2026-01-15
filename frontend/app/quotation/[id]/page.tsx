@@ -2,7 +2,19 @@
 
 import { useState, useEffect } from "react";
 import { Navbar } from "@/components/Navbar";
-import { getQuotation, updateQuotation, setQuotationStatus, rematchQuotation, getOpportunities, searchProducts, searchExternalProduct, getQuotationComments } from "@/lib/api";
+import { 
+    getQuotation, 
+    updateQuotation, 
+    setQuotationStatus, 
+    rematchQuotation, 
+    getOpportunities, 
+    searchProducts, 
+    searchExternalProduct, 
+    getQuotationComments,
+    createQuotationVersion, // New
+    getQuotationHistory,    // New
+    getQuotationVersion     // New
+} from "@/lib/api";
 import { LoadingSpinner } from "@/components/LoadingSpinner";
 import { ProductImage } from "@/components/ProductImage";
 import { ValueEngineeringPanel } from "@/components/ValueEngineeringPanel";
@@ -29,6 +41,7 @@ type QuotationItem = {
     wattage?: number; 
 };
 type Requirement = { id: string; description: string; Fixture_Type?: string; Wattage?: string; Color_Temperature?: string; IP_Rating?: string; Beam_Angle?: string; Lumen_Output?: string; type_id?: string; };
+type Version = { version: number; created_at: string; change_reason: string; total_price: number };
 
 async function sendQuotationEmail(id: number, email: string) {
     const token = localStorage.getItem("token");
@@ -81,6 +94,14 @@ export default function QuotationEditor() {
     const [clientOptions, setClientOptions] = useState<string[]>([]);
     const [commentCount, setCommentCount] = useState(0);
     
+    // Versioning State
+    const [currentVersion, setCurrentVersion] = useState<number>(1);
+    const [maxVersion, setMaxVersion] = useState<number>(1);
+    const [versionHistory, setVersionHistory] = useState<Version[]>([]);
+    const [showVersionModal, setShowVersionModal] = useState(false);
+    const [changeReason, setChangeReason] = useState("");
+    const [isHistoricalView, setIsHistoricalView] = useState(false);
+
     // Advanced feature state
     const [globalMargin, setGlobalMargin] = useState<number>(30); 
 
@@ -100,70 +121,124 @@ export default function QuotationEditor() {
     useEffect(() => { 
         if (id) {
             loadData(false);
-            // Polling for real-time updates (comments & status)
-            const interval = setInterval(() => loadData(true), 5000);
+            // Polling for real-time updates (comments & status) - only if looking at latest version
+            const interval = setInterval(() => {
+                if (!isHistoricalView) loadData(true);
+            }, 5000);
             return () => clearInterval(interval);
         }
-    }, [id]);
+    }, [id, isHistoricalView]);
 
     async function loadData(isRefresh = false) {
         try {
-            const [q, ops, comments] = await Promise.all([
+            const [q, ops, comments, history] = await Promise.all([
                 getQuotation(Number(id)), 
                 !isRefresh ? getOpportunities().catch(() => []) : Promise.resolve([]),
-                getQuotationComments(Number(id)).catch(() => [])
+                getQuotationComments(Number(id)).catch(() => []),
+                getQuotationHistory(Number(id)).catch(() => [])
             ]);
             
-            if (Array.isArray(comments)) {
-                setCommentCount(comments.length);
-            }
+            if (Array.isArray(comments)) setCommentCount(comments.length);
+            if (Array.isArray(history)) setVersionHistory(history);
 
             if (!isRefresh) {
                 // Initial Load: Full state population
-                setData(q);
-                setClientName(q.content?.client_name || q.client_name || "");
+                populateState(q);
+                setMaxVersion(q.version || 1);
+                setCurrentVersion(q.version || 1);
                 setClientOptions(Array.from(new Set(ops.map((o: any) => o.client_name))).filter(Boolean) as string[]);
-                setRequirements(q.content?.requirements || []);
-                
-                const mappedItems = (q.content?.matches || []).map((m: any) => {
-                    const unitPrice = m.unit_price || (m.price / (m.quantity || 1)) || m.price || 0;
-                    // Basic wattage extraction from description for ROI
-                    const wattageMatch = (m.product_description || "").match(/(\d+)\s*W/i);
-                    const estimatedWattage = wattageMatch ? parseInt(wattageMatch[1]) : 20;
-
-                    return {
-                        ...m,
-                        quantity: m.quantity || 1,
-                        unit_price: unitPrice,
-                        unit_cost: m.unit_cost || (unitPrice * 0.6),
-                        price: m.price || (unitPrice * (m.quantity || 1)),
-                        image_url: m.image_url || "",
-                        alternatives: m.alternatives || [],
-                        wattage: estimatedWattage
-                    };
-                });
-                setItems(mappedItems);
-                if (q.status === 'sent' || q.status === 'finalized') setActiveTab("finalize");
             } else {
-                // Real-time update: Only status and metadata to avoid overwriting edits
+                // Real-time update: Only status and metadata
                 setData((prev: any) => ({
                     ...prev,
                     status: q.status,
                     rfp_title: q.rfp_title,
-                    updated_at: q.updated_at
+                    updated_at: q.updated_at,
+                    version: q.version
                 }));
+                // Update max version in case someone else created a new one
+                if (q.version > maxVersion) setMaxVersion(q.version);
             }
         } catch (err) { console.error(err); } 
         finally { if (!isRefresh) setLoading(false); }
     }
+    
+    // Helper to populate state from a quotation object (current or historical)
+    const populateState = (q: any) => {
+        setData(q);
+        setClientName(q.content?.client_name || q.client_name || "");
+        setRequirements(q.content?.requirements || []);
+        
+        const mappedItems = (q.content?.matches || []).map((m: any) => {
+            const unitPrice = m.unit_price || (m.price / (m.quantity || 1)) || m.price || 0;
+            const wattageMatch = (m.product_description || "").match(/(\d+)\s*W/i);
+            const estimatedWattage = wattageMatch ? parseInt(wattageMatch[1]) : 20;
 
+            return {
+                ...m,
+                quantity: m.quantity || 1,
+                unit_price: unitPrice,
+                unit_cost: m.unit_cost || (unitPrice * 0.6),
+                price: m.price || (unitPrice * (m.quantity || 1)),
+                image_url: m.image_url || "",
+                alternatives: m.alternatives || [],
+                wattage: estimatedWattage
+            };
+        });
+        setItems(mappedItems);
+        if (q.status === 'sent' || q.status === 'finalized') setActiveTab("finalize");
+    };
+
+    // --- VERSION CONTROL HANDLERS ---
+    
+    const handleCreateVersion = async () => {
+        if (!changeReason.trim()) return alert("Please enter a reason for this version");
+        setSaving(true);
+        try {
+            const res = await createQuotationVersion(Number(id), changeReason);
+            alert(`Version ${res.new_version} created!`);
+            setShowVersionModal(false);
+            setChangeReason("");
+            // Reload fully to get new version number
+            loadData(false);
+        } catch (e) {
+            alert("Failed to create version");
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleLoadVersion = async (v: number) => {
+        if (v === maxVersion) {
+            // Load latest
+            setIsHistoricalView(false);
+            loadData(false);
+        } else {
+            // Load historical
+            setLoading(true);
+            try {
+                const q = await getQuotationVersion(Number(id), v);
+                populateState(q);
+                setCurrentVersion(v);
+                setIsHistoricalView(true);
+            } catch (e) {
+                alert("Failed to load version");
+            } finally {
+                setLoading(false);
+            }
+        }
+    };
+
+    // ... existing handlers (handleSpecChange, handleRegenerateMatches, etc.) ...
     const handleSpecChange = (idx: number, field: string, value: string) => { 
+        if (isHistoricalView) return; // Read only
         const newReqs = [...requirements]; 
         newReqs[idx] = { ...newReqs[idx], [field]: value }; 
         setRequirements(newReqs); 
     };
     
     const handleRegenerateMatches = async () => { 
+        if (isHistoricalView) return;
         setSaving(true); 
         try { 
             const res = await rematchQuotation(Number(id), requirements); 
@@ -191,6 +266,7 @@ export default function QuotationEditor() {
     };
 
     const handleSelectAlternative = (matchIdx: number, alt: any) => { 
+        if (isHistoricalView) return;
         const newItems = [...items]; 
         const oldQty = newItems[matchIdx].quantity;
         const wattageMatch = (alt.description || "").match(/(\d+)\s*W/i);
@@ -211,10 +287,12 @@ export default function QuotationEditor() {
     };
 
     const handleAddUpsellItem = (item: any) => {
+        if (isHistoricalView) return;
         setItems([...items, { ...item, unit_cost: item.unit_price * 0.5, wattage: 0 }]); 
     };
 
     const handleQuantityChange = (idx: number, newQty: number) => { 
+        if (isHistoricalView) return;
         if (newQty < 1) return; 
         const newItems = [...items]; 
         newItems[idx].quantity = newQty; 
@@ -223,6 +301,7 @@ export default function QuotationEditor() {
     };
 
     const handlePriceChange = (idx: number, newPrice: number) => { 
+        if (isHistoricalView) return;
         const newItems = [...items]; 
         newItems[idx].unit_price = newPrice; 
         newItems[idx].price = newItems[idx].quantity * newPrice; 
@@ -230,12 +309,14 @@ export default function QuotationEditor() {
     };
 
     const handleCostChange = (idx: number, newCost: number) => {
+        if (isHistoricalView) return;
         const newItems = [...items];
         newItems[idx].unit_cost = newCost;
         setItems(newItems);
     };
 
     const applyGlobalMargin = () => {
+        if (isHistoricalView) return;
         const newItems = items.map(item => {
             const cost = item.unit_cost || 0;
             const newPrice = cost / (1 - (globalMargin / 100));
@@ -249,6 +330,7 @@ export default function QuotationEditor() {
     };
     
     const savePricingChanges = async () => { 
+        if (isHistoricalView) return;
         setSaving(true); 
         try { 
             const payload = { 
@@ -277,6 +359,7 @@ export default function QuotationEditor() {
     };
 
     const handleFinalize = async () => {
+        if (isHistoricalView) return;
         setSaving(true);
         try { await setQuotationStatus(Number(id), "finalized"); alert("Quotation finalized!"); loadData(false); } catch (e) { alert("Failed to finalize."); } finally { setSaving(false); }
     };
@@ -287,6 +370,7 @@ export default function QuotationEditor() {
 
     // --- SEARCH LOGIC ---
     const openSearchModal = (idx: number, initialQuery: string) => {
+        if (isHistoricalView) return;
         setActiveReqIndex(idx);
         setSearchQuery(initialQuery || "");
         setSearchModalOpen(true);
@@ -366,6 +450,7 @@ export default function QuotationEditor() {
     };
 
     const openWebSearchModal = (initialQuery: string) => {
+        if (isHistoricalView) return;
         setWebSearchQuery(initialQuery || "");
         setWebSearchModalOpen(true);
         setWebSearchResults([]);
@@ -393,8 +478,21 @@ export default function QuotationEditor() {
 
     return (
         <AuthGuard>
-            <div className="min-h-screen bg-slate-50 pb-20">
+            <div className={`min-h-screen pb-20 ${isHistoricalView ? 'bg-amber-50' : 'bg-slate-50'}`}>
                 <Navbar />
+                
+                {/* Historical View Banner */}
+                {isHistoricalView && (
+                    <div className="bg-amber-100 border-b border-amber-200 text-amber-800 px-6 py-2 text-center text-sm font-bold flex justify-center items-center gap-4">
+                        <span>⚠️ You are viewing an older version (v{currentVersion}). This view is read-only.</span>
+                        <button 
+                            onClick={() => handleLoadVersion(maxVersion)}
+                            className="bg-white border border-amber-300 px-3 py-1 rounded hover:bg-amber-50 transition-colors text-xs"
+                        >
+                            Return to Current Version (v{maxVersion})
+                        </button>
+                    </div>
+                )}
                 
                 {/* Header */}
                 <div className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
@@ -409,7 +507,49 @@ export default function QuotationEditor() {
                                 <div className="flex items-center gap-2 text-xs">
                                     <span className={`font-bold uppercase ${data.status === 'sent' ? 'text-green-600' : 'text-brand'}`}>{data.status}</span>
                                     <span className="text-slate-300">•</span>
-                                    <span className="text-slate-500">{items.length} Line Items</span>
+                                    
+                                    {/* Version Selector */}
+                                    <div className="relative group/version">
+                                        <button className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-colors">
+                                            <span className="font-mono font-bold text-slate-700">v{currentVersion}</span>
+                                            <span className="text-[10px] text-slate-400">▼</span>
+                                        </button>
+                                        
+                                        {/* Version Dropdown */}
+                                        <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden hidden group-hover/version:block z-50">
+                                            <div className="p-2 bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500 uppercase">Version History</div>
+                                            <div className="max-h-60 overflow-y-auto">
+                                                {/* Current */}
+                                                <button 
+                                                    onClick={() => handleLoadVersion(maxVersion)}
+                                                    className={`w-full text-left p-3 hover:bg-slate-50 flex justify-between items-center border-b border-slate-50 ${currentVersion === maxVersion ? 'bg-blue-50/50' : ''}`}
+                                                >
+                                                    <div>
+                                                        <div className="font-bold text-slate-800 text-xs">v{maxVersion} (Current)</div>
+                                                        <div className="text-[10px] text-slate-400">Now editing</div>
+                                                    </div>
+                                                    {currentVersion === maxVersion && <span className="text-brand">●</span>}
+                                                </button>
+                                                
+                                                {/* History */}
+                                                {versionHistory.map((v) => (
+                                                    <button 
+                                                        key={v.version} 
+                                                        onClick={() => handleLoadVersion(v.version)}
+                                                        className={`w-full text-left p-3 hover:bg-slate-50 flex justify-between items-center border-b border-slate-50 ${currentVersion === v.version ? 'bg-amber-50' : ''}`}
+                                                    >
+                                                        <div>
+                                                            <div className="font-bold text-slate-800 text-xs">v{v.version}</div>
+                                                            <div className="text-[10px] text-slate-500 truncate w-32" title={v.change_reason}>{v.change_reason || "No reason"}</div>
+                                                            <div className="text-[10px] text-slate-400">{new Date(v.created_at).toLocaleDateString()}</div>
+                                                        </div>
+                                                        {currentVersion === v.version && <span className="text-amber-500">●</span>}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+
                                 </div>
                             </div>
                         </div>
@@ -425,6 +565,16 @@ export default function QuotationEditor() {
                                     </span>
                                 )}
                             </button>
+                            
+                            {!isHistoricalView && (
+                                <button 
+                                    onClick={() => setShowVersionModal(true)}
+                                    className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-50 hover:text-purple-600 flex items-center gap-2 transition-all"
+                                >
+                                    <span>💾</span> Save Version
+                                </button>
+                            )}
+
                             {saving && <span className="text-sm text-brand animate-pulse flex items-center font-bold">Saving...</span>}
                             {activeTab === 'finalize' && (<button onClick={handleDownload} className="bg-slate-800 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-700 flex items-center gap-2 shadow-lg"><span>⬇</span> PDF</button>)}
                         </div>
@@ -456,16 +606,18 @@ export default function QuotationEditor() {
                     {activeTab === 'specs' && (
                         <div className="animate-fade-in space-y-6">
                             {/* Upsell Widget */}
-                            <UpsellRecommendations items={items} onAddItem={handleAddUpsellItem} />
+                            {!isHistoricalView && <UpsellRecommendations items={items} onAddItem={handleAddUpsellItem} />}
                             
                             {/* Value Engineering Panel */}
-                            <ValueEngineeringPanel items={items} onSwap={handleSelectAlternative} />
+                            {!isHistoricalView && <ValueEngineeringPanel items={items} onSwap={handleSelectAlternative} />}
 
                             <div className="flex justify-between items-center mb-4 bg-white p-4 rounded-xl shadow-sm border border-slate-100">
                                 <h2 className="font-bold text-slate-800">Specification Matching</h2>
-                                <button onClick={handleRegenerateMatches} className="text-xs font-bold text-brand hover:underline flex items-center gap-1">
-                                    <span>↻</span> Re-run AI Matcher
-                                </button>
+                                {!isHistoricalView && (
+                                    <button onClick={handleRegenerateMatches} className="text-xs font-bold text-brand hover:underline flex items-center gap-1">
+                                        <span>↻</span> Re-run AI Matcher
+                                    </button>
+                                )}
                             </div>
 
                             {requirements.map((req: any, i: number) => {
@@ -476,35 +628,35 @@ export default function QuotationEditor() {
                                         <div className="flex-1 p-6 border-b lg:border-b-0 lg:border-r border-slate-100 bg-slate-50/50">
                                             <div className="flex items-center gap-3 mb-4">
                                                 <span className="bg-slate-800 text-white text-xs font-bold px-3 py-1 rounded shadow-sm">{req.type_id || req.id || `#${i+1}`}</span>
-                                                <input type="text" value={req.Fixture_Type || ""} onChange={(e) => handleSpecChange(i, "Fixture_Type", e.target.value)} className="font-bold text-slate-700 text-sm border-b border-transparent hover:border-slate-300 focus:border-brand bg-transparent outline-none flex-1 transition-colors" placeholder="Fixture Type"/>
+                                                <input disabled={isHistoricalView} type="text" value={req.Fixture_Type || ""} onChange={(e) => handleSpecChange(i, "Fixture_Type", e.target.value)} className="font-bold text-slate-700 text-sm border-b border-transparent hover:border-slate-300 focus:border-brand bg-transparent outline-none flex-1 transition-colors" placeholder="Fixture Type"/>
                                                 
-                                                {/* SEARCH BUTTON INTEGRATION */}
-                                                <div className="flex items-center gap-1">
-                                                    <button 
-                                                        onClick={() => openSearchModal(i, req.Fixture_Type || req.description || req.Description)}
-                                                        className="p-2 text-slate-400 hover:text-brand transition-colors bg-white rounded-lg border border-slate-200 shadow-sm"
-                                                        title="Search Product Catalog"
-                                                    >
-                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-                                                    </button>
-                                                    
-                                                    {/* NEW WEB SEARCH BUTTON */}
-                                                    <button 
-                                                        onClick={() => openWebSearchModal(buildWebSearchQuery(req))}
-                                                        className="p-2 text-slate-400 hover:text-blue-600 transition-colors bg-white rounded-lg border border-slate-200 shadow-sm"
-                                                        title="Search Web (Tavily)"
-                                                    >
-                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" /></svg>
-                                                    </button>
-                                                </div>
+                                                {!isHistoricalView && (
+                                                    <div className="flex items-center gap-1">
+                                                        <button 
+                                                            onClick={() => openSearchModal(i, req.Fixture_Type || req.description || req.Description)}
+                                                            className="p-2 text-slate-400 hover:text-brand transition-colors bg-white rounded-lg border border-slate-200 shadow-sm"
+                                                            title="Search Product Catalog"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                                                        </button>
+                                                        
+                                                        <button 
+                                                            onClick={() => openWebSearchModal(buildWebSearchQuery(req))}
+                                                            className="p-2 text-slate-400 hover:text-blue-600 transition-colors bg-white rounded-lg border border-slate-200 shadow-sm"
+                                                            title="Search Web (Tavily)"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" /></svg>
+                                                        </button>
+                                                    </div>
+                                                )}
                                             </div>
-                                            <textarea value={req.Description || req.description || ""} onChange={(e) => handleSpecChange(i, "description", e.target.value)} className="w-full text-sm text-slate-600 mb-4 p-2 border border-slate-200 rounded bg-white outline-none focus:border-brand" rows={3}/>
+                                            <textarea disabled={isHistoricalView} value={req.Description || req.description || ""} onChange={(e) => handleSpecChange(i, "description", e.target.value)} className="w-full text-sm text-slate-600 mb-4 p-2 border border-slate-200 rounded bg-white outline-none focus:border-brand" rows={3}/>
                                             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">Watts</label><input type="text" value={req.Wattage || ""} onChange={(e) => handleSpecChange(i, "Wattage", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
-                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">CCT</label><input type="text" value={req.Color_Temperature || ""} onChange={(e) => handleSpecChange(i, "Color_Temperature", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
-                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">IP</label><input type="text" value={req.IP_Rating || ""} onChange={(e) => handleSpecChange(i, "IP_Rating", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
-                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">Beam</label><input type="text" value={req.Beam_Angle || ""} onChange={(e) => handleSpecChange(i, "Beam_Angle", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
-                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">Lumens</label><input type="text" value={req.Lumen_Output || ""} onChange={(e) => handleSpecChange(i, "Lumen_Output", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
+                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">Watts</label><input disabled={isHistoricalView} type="text" value={req.Wattage || ""} onChange={(e) => handleSpecChange(i, "Wattage", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
+                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">CCT</label><input disabled={isHistoricalView} type="text" value={req.Color_Temperature || ""} onChange={(e) => handleSpecChange(i, "Color_Temperature", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
+                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">IP</label><input disabled={isHistoricalView} type="text" value={req.IP_Rating || ""} onChange={(e) => handleSpecChange(i, "IP_Rating", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
+                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">Beam</label><input disabled={isHistoricalView} type="text" value={req.Beam_Angle || ""} onChange={(e) => handleSpecChange(i, "Beam_Angle", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
+                                                <div className="space-y-1"><label className="text-slate-400 text-[10px] uppercase font-bold">Lumens</label><input disabled={isHistoricalView} type="text" value={req.Lumen_Output || ""} onChange={(e) => handleSpecChange(i, "Lumen_Output", e.target.value)} className="w-full p-1.5 border border-slate-200 rounded bg-white" /></div>
                                             </div>
                                         </div>
                                         
@@ -524,7 +676,7 @@ export default function QuotationEditor() {
                                                     </div>
                                                     
                                                     {/* Alternatives */}
-                                                    {match.alternatives && match.alternatives.length > 0 && (
+                                                    {!isHistoricalView && match.alternatives && match.alternatives.length > 0 && (
                                                         <div className="mt-4 border-t border-slate-100 pt-3">
                                                             <div className="text-[10px] font-bold text-slate-400 uppercase mb-2">Alternates</div>
                                                             <div className="flex flex-col gap-2">
@@ -559,16 +711,16 @@ export default function QuotationEditor() {
                             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
                                 <div className="flex items-center justify-between mb-4">
                                     <h3 className="font-bold text-slate-800">Global Pricing Strategy</h3>
-                                    <button onClick={applyGlobalMargin} className="bg-brand text-white px-4 py-2 rounded-lg text-xs font-bold shadow hover:bg-brand-dark transition-all">Apply Strategy</button>
+                                    {!isHistoricalView && <button onClick={applyGlobalMargin} className="bg-brand text-white px-4 py-2 rounded-lg text-xs font-bold shadow hover:bg-brand-dark transition-all">Apply Strategy</button>}
                                 </div>
                                 <div className="flex items-center gap-4">
                                     <div className="flex-1">
                                         <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Target Margin: {globalMargin}%</label>
-                                        <input type="range" min="0" max="80" value={globalMargin} onChange={(e) => setGlobalMargin(parseInt(e.target.value))} className="w-full accent-brand" />
+                                        <input disabled={isHistoricalView} type="range" min="0" max="80" value={globalMargin} onChange={(e) => setGlobalMargin(parseInt(e.target.value))} className="w-full accent-brand" />
                                     </div>
                                     <div className="flex-1">
                                         <label className="text-xs font-bold text-slate-500 uppercase mb-2 block">Client Name</label>
-                                        <input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} className="input-field w-full" placeholder="Enter client name..." list="client-options"/>
+                                        <input disabled={isHistoricalView} type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} className="input-field w-full" placeholder="Enter client name..." list="client-options"/>
                                         <datalist id="client-options">{clientOptions.map((client, idx) => (<option key={idx} value={client} />))}</datalist>
                                     </div>
                                 </div>
@@ -584,9 +736,9 @@ export default function QuotationEditor() {
                                             return (
                                             <tr key={idx} className="hover:bg-slate-50">
                                                 <td className="px-4 py-3 max-w-xs"><div className="font-bold text-slate-800 truncate">{item.product_title}</div></td>
-                                                <td className="px-4 py-3 text-center"><input type="number" min="1" value={item.quantity} onChange={(e) => handleQuantityChange(idx, parseInt(e.target.value))} className="w-16 px-2 py-1 border border-slate-200 rounded text-center bg-white outline-none" /></td>
-                                                <td className="px-4 py-3 text-right bg-red-50/10"><input type="number" value={item.unit_cost?.toFixed(2)} onChange={(e) => handleCostChange(idx, parseFloat(e.target.value))} className="w-24 px-2 py-1 border border-transparent hover:border-red-200 rounded text-right bg-transparent focus:bg-white focus:border-red-400 outline-none text-red-600 font-mono" /></td>
-                                                <td className="px-4 py-3 text-right bg-blue-50/10"><input type="number" value={item.unit_price?.toFixed(2)} onChange={(e) => handlePriceChange(idx, parseFloat(e.target.value))} className="w-24 px-2 py-1 border border-transparent hover:border-blue-200 rounded text-right bg-transparent focus:bg-white focus:border-blue-400 outline-none font-mono font-bold text-blue-600" /></td>
+                                                <td className="px-4 py-3 text-center"><input disabled={isHistoricalView} type="number" min="1" value={item.quantity} onChange={(e) => handleQuantityChange(idx, parseInt(e.target.value))} className="w-16 px-2 py-1 border border-slate-200 rounded text-center bg-white outline-none" /></td>
+                                                <td className="px-4 py-3 text-right bg-red-50/10"><input disabled={isHistoricalView} type="number" value={item.unit_cost?.toFixed(2)} onChange={(e) => handleCostChange(idx, parseFloat(e.target.value))} className="w-24 px-2 py-1 border border-transparent hover:border-red-200 rounded text-right bg-transparent focus:bg-white focus:border-red-400 outline-none text-red-600 font-mono" /></td>
+                                                <td className="px-4 py-3 text-right bg-blue-50/10"><input disabled={isHistoricalView} type="number" value={item.unit_price?.toFixed(2)} onChange={(e) => handlePriceChange(idx, parseFloat(e.target.value))} className="w-24 px-2 py-1 border border-transparent hover:border-blue-200 rounded text-right bg-transparent focus:bg-white focus:border-blue-400 outline-none font-mono font-bold text-blue-600" /></td>
                                                 <td className="px-4 py-3 text-right"><span className={`text-xs font-bold px-2 py-1 rounded ${itemMargin < 20 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>{itemMargin.toFixed(0)}%</span></td>
                                                 <td className="px-4 py-3 text-right font-mono font-bold text-slate-800">${(item.price || 0).toLocaleString()}</td>
                                             </tr>
@@ -629,7 +781,7 @@ export default function QuotationEditor() {
                         <div className="animate-fade-in max-w-4xl mx-auto">
                             <div className="bg-white shadow-2xl rounded-none md:rounded-lg overflow-hidden mb-8 print:shadow-none print:w-full">
                                 <div className="bg-slate-900 text-white p-12 print:bg-white print:text-black print:p-0 print:border-b-2 print:border-black print:mb-8">
-                                    <div className="flex justify-between"><div><h1 className="text-4xl font-bold mb-2">Quotation</h1><p className="opacity-75">#{data.id}</p></div><div className="text-right"><div className="text-2xl font-bold">{clientName || "Client"}</div><div className="text-sm opacity-75">{new Date().toLocaleDateString()}</div></div></div>
+                                    <div className="flex justify-between"><div><h1 className="text-4xl font-bold mb-2">Quotation</h1><p className="opacity-75">#{data.id} (v{currentVersion})</p></div><div className="text-right"><div className="text-2xl font-bold">{clientName || "Client"}</div><div className="text-sm opacity-75">{new Date().toLocaleDateString()}</div></div></div>
                                 </div>
                                 <div className="p-12 print:p-0">
                                     <table className="w-full mb-12">
@@ -658,7 +810,7 @@ export default function QuotationEditor() {
                                 </div>
                             </div>
                             <div className="flex flex-col items-center gap-4 print:hidden">
-                                {data.status !== 'finalized' && data.status !== 'sent' ? (
+                                {data.status !== 'finalized' && data.status !== 'sent' && !isHistoricalView ? (
                                     <button onClick={handleFinalize} disabled={saving} className="bg-blue-600 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-blue-700 transition-all w-full max-w-md">Lock & Finalize Quotation</button>
                                 ) : (
                                     <div className="flex gap-2 w-full max-w-md">
@@ -670,6 +822,44 @@ export default function QuotationEditor() {
                         </div>
                     )}
                 </div>
+
+                {/* --- VERSION CREATION MODAL --- */}
+                {showVersionModal && (
+                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                        <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+                            <h3 className="text-lg font-bold text-slate-800 mb-2">Create New Version</h3>
+                            <p className="text-sm text-slate-500 mb-4">
+                                This will archive the current state as <b>v{maxVersion}</b> and create a new editable <b>v{maxVersion + 1}</b>.
+                            </p>
+                            
+                            <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Change Reason / Description</label>
+                            <textarea 
+                                autoFocus
+                                className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:border-brand outline-none mb-4"
+                                rows={3}
+                                placeholder="e.g. Client requested 10% discount on downlights..."
+                                value={changeReason}
+                                onChange={(e) => setChangeReason(e.target.value)}
+                            />
+                            
+                            <div className="flex justify-end gap-3">
+                                <button 
+                                    onClick={() => setShowVersionModal(false)}
+                                    className="px-4 py-2 rounded-lg text-slate-600 hover:bg-slate-100 font-bold text-sm"
+                                >
+                                    Cancel
+                                </button>
+                                <button 
+                                    onClick={handleCreateVersion}
+                                    disabled={!changeReason.trim() || saving}
+                                    className="px-4 py-2 rounded-lg bg-brand text-white font-bold text-sm hover:bg-brand-dark shadow-md disabled:opacity-50"
+                                >
+                                    {saving ? 'Creating...' : 'Create Version'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* --- SEARCH MODAL (INTERNAL) --- */}
                 {searchModalOpen && (
