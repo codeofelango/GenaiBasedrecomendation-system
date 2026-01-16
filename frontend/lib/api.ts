@@ -32,8 +32,11 @@ async function getJSON(path: string, options: RequestInit = {}) {
 	return res.json();
 }
 
+// --- User & Auth ---
 export async function getUsers() { return getJSON("/users"); }
 export async function getUser(id: number) { const users = await getUsers(); return users.find((u: any) => u.id === id); }
+
+// --- Product Management ---
 export async function getProducts() { return getJSON("/items"); }
 export async function addProduct(payload: any) { return getJSON("/items/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
 
@@ -48,10 +51,19 @@ export async function updateProduct(id: number, payload: any) {
 export async function embedAllProducts() { return getJSON("/items/embed_all", { method: "POST" }); }
 export async function searchProducts(query: string) { return getJSON(`/items/search?q=${encodeURIComponent(query)}`); }
 
+export async function uploadProductImage(file: File) {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${BASE_URL}/items/upload-image`, { method: "POST", body: formData });
+    if (!res.ok) throw new Error("Image upload failed");
+    return res.json(); 
+}
+
+// --- Quotation & RFP ---
 export async function uploadRFP(file: File) {
 	const formData = new FormData();
 	formData.append("file", file);
-    // Explicitly call getAuthHeaders here as we are using raw fetch, not getJSON
+    // Explicitly call getAuthHeaders here as we are using raw fetch
     const headers = getAuthHeaders() as any;
     const res = await fetch(`${BASE_URL}/quotation/upload`, { 
         method: "POST", 
@@ -72,23 +84,16 @@ export async function updateQuotation(id: number, payload: any) { return getJSON
 export async function rematchQuotation(id: number, requirements: any[]) { return getJSON(`/quotation/${id}/rematch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requirements) }); }
 export async function setQuotationStatus(id: number, status: string) { return getJSON(`/quotation/${id}/status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }); }
 
-export async function getOpportunities() { return getJSON("/opportunities"); }
-export async function addOpportunity(payload: any) { return getJSON("/opportunities/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
-export async function updateOpportunity(id: number, payload: any) { return getJSON(`/opportunities/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
-export async function searchOpportunities(query: string) { return getJSON(`/opportunities/search?q=${encodeURIComponent(query)}`); }
-export async function getActivity(query: string = "") { const url = query ? `/activity?q=${encodeURIComponent(query)}` : "/activity"; return getJSON(url); }
-
-// --- Discussion API ---
+// --- Quotation Discussion & Comments ---
 export async function getQuotationComments(id: number) { return getJSON(`/quotation/${id}/comments`); }
 
 export async function uploadCommentAttachment(id: number, file: File) {
     const formData = new FormData();
     formData.append("file", file);
     
-    // Explicitly call getAuthHeaders here as we are using raw fetch, not getJSON
-    // Note: We do NOT set Content-Type header here manually. fetch+FormData does it automatically with boundary.
     const headers = getAuthHeaders() as any;
     
+    // Using fetch directly to let browser set boundary for FormData
     const res = await fetch(`${BASE_URL}/quotation/${id}/comments/upload`, {
         method: "POST",
         body: formData,
@@ -103,20 +108,33 @@ export async function uploadCommentAttachment(id: number, file: File) {
     return res.json();
 }
 
-export async function addQuotationComment(id: number, message: string, isInternal: boolean = false, attachments: any[] = []) { 
+export async function addQuotationComment(
+    id: number, 
+    message: string, 
+    isInternal: boolean = false, 
+    attachments: any[] = [],
+    authorName?: string,
+    authorEmail?: string
+) { 
     return getJSON(`/quotation/${id}/comments`, { 
         method: "POST", 
         headers: { "Content-Type": "application/json" }, 
-        body: JSON.stringify({ message, is_internal: isInternal, attachments }) 
+        body: JSON.stringify({ 
+            message, 
+            is_internal: isInternal, 
+            attachments,
+            author_name: authorName,
+            author_email: authorEmail
+        }) 
     }); 
 }
 
 // --- Version Control API ---
-export async function createQuotationVersion(id: number, changeReason: string) {
+export async function createQuotationVersion(id: number, changeReason: string, summary: string) {
     return getJSON(`/quotation/${id}/version`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ change_reason: changeReason })
+        body: JSON.stringify({ change_reason: changeReason, summary: summary })
     });
 }
 
@@ -128,10 +146,42 @@ export async function getQuotationVersion(id: number, version: number) {
     return getJSON(`/quotation/${id}/versions/${version}`);
 }
 
-// --- External Search (Tavily) ---
+// --- Daily Digest API ---
+export async function getDailySummary() { return getJSON("/daily-digest/summary"); }
+export async function getDailyPosts() { return getJSON("/daily-digest/posts"); }
+export async function createDailyPost(content: string) {
+    return getJSON("/daily-digest/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content })
+    });
+}
+export async function createDailyComment(postId: number, content: string) {
+    return getJSON("/daily-digest/comments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ post_id: postId, content })
+    });
+}
+
+// --- Opportunity Management ---
+export async function getOpportunities() { return getJSON("/opportunities"); }
+export async function addOpportunity(payload: any) { return getJSON("/opportunities/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
+export async function updateOpportunity(id: number, payload: any) { return getJSON(`/opportunities/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); }
+export async function searchOpportunities(query: string) { return getJSON(`/opportunities/search?q=${encodeURIComponent(query)}`); }
+export async function getActivity(query: string = "") { const url = query ? `/activity?q=${encodeURIComponent(query)}` : "/activity"; return getJSON(url); }
+
+// --- Visual Search & RAG ---
+export async function visualSearch(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${BASE_URL}/visual-search/search`, { method: 'POST', body: formData });
+    if (!res.ok) throw new Error('Visual search failed');
+    return res.json();
+}
+
 export async function searchExternalProduct(query: string) { return getJSON(`/external/search-product?query=${encodeURIComponent(query)}`); }
 
-// --- RAG API ---
 export async function getRagSessions() { return getJSON("/rag/sessions"); }
 export async function getRagSessionHistory(sessionId: string) { return getJSON(`/rag/history/${sessionId}`); }
 export async function chatRag(query: string, sessionId?: string) {
@@ -142,7 +192,6 @@ export async function chatRag(query: string, sessionId?: string) {
     }); 
 }
 
-// --- DB Chat API ---
 export async function chatDb(query: string, sessionId?: string | null) {
     return getJSON("/db-chat/message", { 
         method: "POST", 
@@ -151,24 +200,7 @@ export async function chatDb(query: string, sessionId?: string | null) {
     }); 
 }
 
-// --- Visual Search & Uploads ---
-export async function visualSearch(file: File) {
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${BASE_URL}/visual-search/search`, { method: 'POST', body: formData });
-    if (!res.ok) throw new Error('Visual search failed');
-    return res.json();
-}
-
-export async function uploadProductImage(file: File) {
-    const formData = new FormData();
-    formData.append("file", file);
-    const res = await fetch(`${BASE_URL}/items/upload-image`, { method: "POST", body: formData });
-    if (!res.ok) throw new Error("Image upload failed");
-    return res.json(); 
-}
-
-// Legacy exports
+// --- Legacy / Aliases ---
 export const getItems = getProducts;
 export const addItem = addProduct;
 export const embedAllItems = embedAllProducts;

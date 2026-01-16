@@ -11,9 +11,9 @@ import {
     searchProducts, 
     searchExternalProduct, 
     getQuotationComments,
-    createQuotationVersion, // New
-    getQuotationHistory,    // New
-    getQuotationVersion     // New
+    createQuotationVersion,
+    getQuotationHistory,
+    getQuotationVersion
 } from "@/lib/api";
 import { LoadingSpinner } from "@/components/LoadingSpinner";
 import { ProductImage } from "@/components/ProductImage";
@@ -41,7 +41,7 @@ type QuotationItem = {
     wattage?: number; 
 };
 type Requirement = { id: string; description: string; Fixture_Type?: string; Wattage?: string; Color_Temperature?: string; IP_Rating?: string; Beam_Angle?: string; Lumen_Output?: string; type_id?: string; };
-type Version = { version: number; created_at: string; change_reason: string; total_price: number };
+type Version = { version: number; created_at: string; change_reason: string; summary?: string; total_price: number };
 
 async function sendQuotationEmail(id: number, email: string) {
     const token = localStorage.getItem("token");
@@ -100,6 +100,7 @@ export default function QuotationEditor() {
     const [versionHistory, setVersionHistory] = useState<Version[]>([]);
     const [showVersionModal, setShowVersionModal] = useState(false);
     const [changeReason, setChangeReason] = useState("");
+    const [versionSummary, setVersionSummary] = useState("");
     const [isHistoricalView, setIsHistoricalView] = useState(false);
 
     // Advanced feature state
@@ -117,6 +118,10 @@ export default function QuotationEditor() {
     const [webSearchResults, setWebSearchResults] = useState<any[]>([]);
     const [isWebSearching, setIsWebSearching] = useState(false);
     const [webSearchQuery, setWebSearchQuery] = useState("");
+
+    // --- SHARE STATE ---
+    const [shareModalOpen, setShareModalOpen] = useState(false);
+    const [shareLink, setShareLink] = useState("");
 
     useEffect(() => { 
         if (id) {
@@ -189,16 +194,32 @@ export default function QuotationEditor() {
         if (q.status === 'sent' || q.status === 'finalized') setActiveTab("finalize");
     };
 
+    // Helper to calculate price difference
+    const getPriceDiff = (currentVer: Version, allVersions: Version[]) => {
+        if (currentVer.version === 1) return 0;
+        const prevVer = allVersions.find(v => v.version === currentVer.version - 1);
+        if (!prevVer) return 0;
+        return currentVer.total_price - prevVer.total_price;
+    };
+
+    const formatDiff = (diff: number) => {
+        if (diff === 0) return null;
+        const sign = diff > 0 ? "+" : "";
+        const color = diff > 0 ? "text-red-500" : "text-green-500"; // Cost increase usually bad/red, decrease good/green
+        return <span className={`text-[10px] font-bold ${color}`}>({sign}${Math.abs(diff).toLocaleString()})</span>;
+    };
+
     // --- VERSION CONTROL HANDLERS ---
     
     const handleCreateVersion = async () => {
         if (!changeReason.trim()) return alert("Please enter a reason for this version");
         setSaving(true);
         try {
-            const res = await createQuotationVersion(Number(id), changeReason);
+            const res = await createQuotationVersion(Number(id), changeReason, versionSummary);
             alert(`Version ${res.new_version} created!`);
             setShowVersionModal(false);
             setChangeReason("");
+            setVersionSummary("");
             // Reload fully to get new version number
             loadData(false);
         } catch (e) {
@@ -229,7 +250,23 @@ export default function QuotationEditor() {
         }
     };
 
-    // ... existing handlers (handleSpecChange, handleRegenerateMatches, etc.) ...
+    // --- SHARE HANDLER ---
+    const handleShare = () => {
+        const link = `${window.location.origin}/quotation/${id}/view`;
+        setShareLink(link);
+        setShareModalOpen(true);
+    };
+
+    const copyToClipboard = () => {
+        navigator.clipboard.writeText(shareLink);
+        alert("Link copied to clipboard!");
+    };
+
+    const handleOpenView = () => {
+        window.open(`/quotation/${id}/view`, '_blank');
+    };
+
+    // ... existing handlers ...
     const handleSpecChange = (idx: number, field: string, value: string) => { 
         if (isHistoricalView) return; // Read only
         const newReqs = [...requirements]; 
@@ -483,11 +520,22 @@ export default function QuotationEditor() {
                 
                 {/* Historical View Banner */}
                 {isHistoricalView && (
-                    <div className="bg-amber-100 border-b border-amber-200 text-amber-800 px-6 py-2 text-center text-sm font-bold flex justify-center items-center gap-4">
-                        <span>⚠️ You are viewing an older version (v{currentVersion}). This view is read-only.</span>
+                    <div className="bg-amber-100 border-b border-amber-200 text-amber-800 px-6 py-3 text-center text-sm font-bold flex flex-col md:flex-row justify-center items-center gap-4 shadow-inner">
+                        <div className="flex items-center gap-2">
+                            <span>⚠️ You are viewing Version {currentVersion}.</span>
+                            <span className="bg-white/50 px-2 py-0.5 rounded text-amber-900 border border-amber-200">
+                                Total: ${data?.total_price?.toLocaleString()}
+                            </span>
+                            {/* Compare with latest */}
+                            {maxVersion > currentVersion && (
+                                <span className="text-xs text-amber-700">
+                                    (Current is <span className="font-mono font-bold">${versionHistory.find(v => v.version === maxVersion)?.total_price?.toLocaleString()}</span>)
+                                </span>
+                            )}
+                        </div>
                         <button 
                             onClick={() => handleLoadVersion(maxVersion)}
-                            className="bg-white border border-amber-300 px-3 py-1 rounded hover:bg-amber-50 transition-colors text-xs"
+                            className="bg-white border border-amber-300 px-3 py-1 rounded hover:bg-amber-50 transition-colors text-xs shadow-sm"
                         >
                             Return to Current Version (v{maxVersion})
                         </button>
@@ -510,42 +558,73 @@ export default function QuotationEditor() {
                                     
                                     {/* Version Selector */}
                                     <div className="relative group/version">
-                                        <button className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-colors">
+                                        <button className="flex items-center gap-1 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded transition-colors border border-slate-200">
                                             <span className="font-mono font-bold text-slate-700">v{currentVersion}</span>
                                             <span className="text-[10px] text-slate-400">▼</span>
                                         </button>
                                         
                                         {/* Version Dropdown */}
-                                        <div className="absolute top-full left-0 mt-1 w-64 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden hidden group-hover/version:block z-50">
-                                            <div className="p-2 bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500 uppercase">Version History</div>
-                                            <div className="max-h-60 overflow-y-auto">
-                                                {/* Current */}
-                                                <button 
-                                                    onClick={() => handleLoadVersion(maxVersion)}
-                                                    className={`w-full text-left p-3 hover:bg-slate-50 flex justify-between items-center border-b border-slate-50 ${currentVersion === maxVersion ? 'bg-blue-50/50' : ''}`}
-                                                >
-                                                    <div>
-                                                        <div className="font-bold text-slate-800 text-xs">v{maxVersion} (Current)</div>
-                                                        <div className="text-[10px] text-slate-400">Now editing</div>
-                                                    </div>
-                                                    {currentVersion === maxVersion && <span className="text-brand">●</span>}
-                                                </button>
-                                                
-                                                {/* History */}
-                                                {versionHistory.map((v) => (
+                                        <div className="absolute top-full left-0 mt-1 w-96 bg-white border border-slate-200 shadow-xl rounded-lg overflow-hidden hidden group-hover/version:block z-50 animate-in fade-in zoom-in-95 duration-100">
+                                            <div className="p-2 bg-slate-50 border-b border-slate-100 text-[10px] font-bold text-slate-500 uppercase flex justify-between">
+                                                <span>Version History</span>
+                                                <span>Total Price</span>
+                                            </div>
+                                            <div className="max-h-96 overflow-y-auto">
+                                                {/* Current Item in List */}
+                                                {versionHistory.length > 0 && versionHistory[0].version !== maxVersion && (
+                                                     <button 
+                                                        onClick={() => handleLoadVersion(maxVersion)}
+                                                        className={`w-full text-left p-3 hover:bg-slate-50 flex justify-between items-start border-b border-slate-50 ${currentVersion === maxVersion ? 'bg-blue-50/50' : ''}`}
+                                                    >
+                                                        <div>
+                                                            <div className="font-bold text-slate-800 text-xs flex items-center gap-2">
+                                                                v{maxVersion} (Current)
+                                                                <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-[9px] uppercase tracking-wide">Latest</span>
+                                                            </div>
+                                                            <div className="text-[10px] text-slate-400 mt-0.5">Now editing</div>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            {currentVersion === maxVersion && <span className="text-brand block mb-1 text-[10px]">● Active</span>}
+                                                            <span className="text-xs font-mono font-bold text-slate-700">${(versionHistory.find(v => v.version === maxVersion)?.total_price || 0).toLocaleString()}</span>
+                                                        </div>
+                                                    </button>
+                                                )}
+
+                                                {/* History List */}
+                                                {versionHistory.map((v) => {
+                                                    const diff = getPriceDiff(v, versionHistory);
+                                                    return (
                                                     <button 
                                                         key={v.version} 
                                                         onClick={() => handleLoadVersion(v.version)}
-                                                        className={`w-full text-left p-3 hover:bg-slate-50 flex justify-between items-center border-b border-slate-50 ${currentVersion === v.version ? 'bg-amber-50' : ''}`}
+                                                        className={`w-full text-left p-3 hover:bg-slate-50 flex justify-between items-start border-b border-slate-50 transition-colors ${currentVersion === v.version ? 'bg-amber-50' : ''}`}
                                                     >
                                                         <div>
-                                                            <div className="font-bold text-slate-800 text-xs">v{v.version}</div>
-                                                            <div className="text-[10px] text-slate-500 truncate w-32" title={v.change_reason}>{v.change_reason || "No reason"}</div>
-                                                            <div className="text-[10px] text-slate-400">{new Date(v.created_at).toLocaleDateString()}</div>
+                                                            <div className="font-bold text-slate-800 text-xs flex items-center gap-2">
+                                                                v{v.version}
+                                                                {v.version === 1 && <span className="text-[9px] text-slate-400 bg-slate-100 px-1 rounded">INIT</span>}
+                                                            </div>
+                                                            <div className="text-[10px] font-semibold text-slate-600 truncate w-56 mt-0.5" title={v.change_reason}>{v.change_reason || "No reason provided"}</div>
+                                                            {v.summary && (
+                                                                <div className="text-[10px] text-slate-500 mt-1 line-clamp-2 w-56 italic border-l-2 border-slate-200 pl-2">"{v.summary}"</div>
+                                                            )}
+                                                            <div className="text-[10px] text-slate-400 mt-1 flex gap-2">
+                                                                <span>{new Date(v.created_at).toLocaleDateString()}</span>
+                                                                <span>{new Date(v.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                                            </div>
                                                         </div>
-                                                        {currentVersion === v.version && <span className="text-amber-500">●</span>}
+                                                        <div className="text-right flex flex-col items-end">
+                                                            {currentVersion === v.version && <span className="text-amber-600 block mb-1 text-[10px] font-bold">● Viewing</span>}
+                                                            <span className="text-xs font-mono font-bold text-slate-700">${v.total_price?.toLocaleString()}</span>
+                                                            {/* Price Diff Badge */}
+                                                            {v.version > 1 && (
+                                                                <div className="mt-1">
+                                                                    {formatDiff(diff)}
+                                                                </div>
+                                                            )}
+                                                        </div>
                                                     </button>
-                                                ))}
+                                                )})}
                                             </div>
                                         </div>
                                     </div>
@@ -554,6 +633,18 @@ export default function QuotationEditor() {
                             </div>
                         </div>
                         <div className="flex gap-3">
+                            <button 
+                                onClick={handleOpenView}
+                                className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-50 hover:text-brand flex items-center gap-2 transition-all relative"
+                            >
+                                <span>👁️</span> View Mode
+                            </button>
+                            <button 
+                                onClick={handleShare}
+                                className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-50 hover:text-brand flex items-center gap-2 transition-all relative"
+                            >
+                                <span>🔗</span> Share
+                            </button>
                             <button 
                                 onClick={() => router.push(`/quotation/${id}/discuss`)}
                                 className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-slate-50 hover:text-brand flex items-center gap-2 transition-all relative"
@@ -832,14 +923,22 @@ export default function QuotationEditor() {
                                 This will archive the current state as <b>v{maxVersion}</b> and create a new editable <b>v{maxVersion + 1}</b>.
                             </p>
                             
-                            <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Change Reason / Description</label>
-                            <textarea 
+                            <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Change Reason (Required)</label>
+                            <input 
                                 autoFocus
                                 className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:border-brand outline-none mb-4"
-                                rows={3}
-                                placeholder="e.g. Client requested 10% discount on downlights..."
+                                placeholder="e.g. Client requested 10% discount..."
                                 value={changeReason}
                                 onChange={(e) => setChangeReason(e.target.value)}
+                            />
+
+                            <label className="block text-xs font-bold text-slate-600 uppercase mb-2">Detailed Summary (Optional)</label>
+                            <textarea 
+                                className="w-full border border-slate-300 rounded-lg p-3 text-sm focus:border-brand outline-none mb-4"
+                                rows={3}
+                                placeholder="Describe the specific changes made in this version..."
+                                value={versionSummary}
+                                onChange={(e) => setVersionSummary(e.target.value)}
                             />
                             
                             <div className="flex justify-end gap-3">
@@ -855,6 +954,42 @@ export default function QuotationEditor() {
                                     className="px-4 py-2 rounded-lg bg-brand text-white font-bold text-sm hover:bg-brand-dark shadow-md disabled:opacity-50"
                                 >
                                     {saving ? 'Creating...' : 'Create Version'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* --- SHARE MODAL --- */}
+                {shareModalOpen && (
+                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                        <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+                            <h3 className="text-lg font-bold text-slate-800 mb-2">Share Quotation</h3>
+                            <p className="text-sm text-slate-500 mb-4">
+                                Share this link with your client for a view-only version of this quotation.
+                            </p>
+                            
+                            <div className="flex gap-2 mb-4">
+                                <input 
+                                    type="text" 
+                                    readOnly 
+                                    value={shareLink} 
+                                    className="flex-1 border border-slate-300 rounded-lg p-3 text-sm bg-slate-50 text-slate-600 outline-none"
+                                />
+                                <button 
+                                    onClick={copyToClipboard}
+                                    className="px-4 py-2 rounded-lg bg-slate-800 text-white font-bold text-sm hover:bg-slate-700 shadow-md whitespace-nowrap"
+                                >
+                                    Copy Link
+                                </button>
+                            </div>
+                            
+                            <div className="flex justify-end">
+                                <button 
+                                    onClick={() => setShareModalOpen(false)}
+                                    className="px-4 py-2 rounded-lg text-slate-600 hover:bg-slate-100 font-bold text-sm"
+                                >
+                                    Close
                                 </button>
                             </div>
                         </div>

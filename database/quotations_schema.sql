@@ -210,3 +210,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_quotation_versions_unique ON quotation_ver
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     created_by TEXT DEFAULT 'system'
 );
+
+
+CREATE TABLE IF NOT EXISTS daily_posts (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    user_name TEXT,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    likes INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS daily_comments (
+    id SERIAL PRIMARY KEY,
+    post_id INTEGER REFERENCES daily_posts(id) ON DELETE CASCADE,
+    user_id INTEGER REFERENCES users(id),
+    user_name TEXT,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for fast lookup
+CREATE INDEX IF NOT EXISTS idx_daily_posts_created ON daily_posts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_comments_post ON daily_comments(post_id);

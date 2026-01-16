@@ -21,6 +21,7 @@ from api.email_bot import router as email_bot_router
 import api.visual_search as visual_search   # Visual Search Module
 import api.external_search as external_search   # External Search Module
 from api.db_chat import router as db_chat_router  # <--- Add this
+from api import daily_digest # Import the new module
 
 # Ensure uploads directory exists
 os.makedirs("uploads", exist_ok=True)
@@ -77,6 +78,8 @@ def create_app() -> FastAPI:
     app.include_router(db_chat_router)  # <--- Register DB Chat
     # Register RAG
     app.include_router(rag_router)
+    app.include_router(daily_digest.router) # Add this line
+
 
     @app.get("/")
     async def root(): return {"status": "ok", "system": "Project Phoenix"}

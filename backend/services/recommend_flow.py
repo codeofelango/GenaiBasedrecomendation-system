@@ -1,4 +1,7 @@
 from typing import Any, Dict, List
+import os
+import logging
+import google.generativeai as genai
 
 # Absolute imports
 from core.database import fetchrow
@@ -7,6 +10,43 @@ from services.vector_search import search_similar_items
 from services.ranking import rerank
 from services.ml_client import chat_reasoning
 from agents.graph import run_recommendation_graph
+
+logger = logging.getLogger(__name__)
+
+# Configure Gemini (Local to this service wrapper)
+api_key = os.getenv("GOOGLE_API_KEY")
+if api_key:
+    try:
+        genai.configure(api_key=api_key)
+    except Exception as e:
+        logger.error(f"Failed to configure Gemini in recommend_flow: {e}")
+
+model = None
+try:
+    model = genai.GenerativeModel('gemini-pro')
+except Exception as e:
+    logger.warning(f"Failed to initialize Gemini model: {e}")
+
+async def generate_text_gemini(prompt: str) -> str:
+    """
+    Generates text using Google Gemini model.
+    """
+    global model
+    if not api_key:
+        logger.warning("GOOGLE_API_KEY not found. Returning mock response.")
+        return "AI Summary unavailable (Missing API Key)."
+        
+    try:
+        if not model:
+             model = genai.GenerativeModel('gemini-pro')
+
+        response = model.generate_content(prompt)
+        if response and response.text:
+            return response.text
+        return "No response generated."
+    except Exception as e:
+        logger.error(f"Gemini generation error: {e}")
+        return f"Error generating summary: {str(e)}"
 
 async def _load_user_profile(user_id: int) -> Dict[str, Any]:
     row = await fetchrow(

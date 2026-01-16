@@ -52,6 +52,9 @@ class CommentCreate(BaseModel):
     message: str
     is_internal: bool = False
     attachments: List[Attachment] = []
+    # New fields for guest/public comments
+    author_name: Optional[str] = None
+    author_email: Optional[str] = None
 
 class CommentDB(BaseModel):
     id: int

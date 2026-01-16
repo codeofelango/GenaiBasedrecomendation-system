@@ -170,7 +170,15 @@ export default function QuotationDashboard() {
                             <h1 className="text-3xl font-bold text-slate-900 mb-2">Quotation Dashboard</h1>
                             <p className="text-slate-500">Real-time overview of your RFP pipeline.</p>
                         </div>
-                        <div>
+                        <div className="flex gap-3">
+                            {/* NEW: Daily Digest Link */}
+                            <button 
+                                onClick={() => router.push('/daily-digest')}
+                                className="flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-slate-600 bg-white border border-slate-200 shadow-sm hover:bg-slate-50 transition-all hover:text-brand"
+                            >
+                                <span>📊</span> Daily Digest
+                            </button>
+
                             <label className={`
                                 flex items-center gap-3 px-6 py-3 rounded-xl font-bold text-white shadow-lg shadow-brand/20 cursor-pointer transition-all hover:scale-105 active:scale-95
                                 ${uploading ? 'bg-slate-400 cursor-wait' : 'bg-brand hover:bg-brand-dark'}
